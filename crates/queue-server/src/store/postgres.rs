@@ -140,4 +140,59 @@ impl QueueStore for PostgresStore {
         }
         Ok(jobs)
     }
+
+    async fn ack(&self, job_id: JobId) -> Result<(), QueueError> {
+        let affected = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET state='succeeded',
+                leased_until=NULL,
+                updated_at=now()
+            WHERE id=$1 AND state='leased'
+            "#,
+        )
+        .bind(job_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(QueueError::InvalidState);
+        }
+        Ok(())
+    }
+
+    async fn fail(&self, job_id: JobId, reason: &str, retry_ms: i64) -> Result<(), QueueError> {
+        let affected = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET attempts = attempts + 1,
+                last_error = $2,
+                leased_until = NULL,
+                state = CASE
+                  WHEN (attempts + 1) >= max_attempts THEN 'dead'
+                  ELSE 'queued'
+                END,
+                run_at = CASE
+                  WHEN (attempts + 1) >= max_attempts THEN run_at
+                  ELSE now() + ($3::int * interval '1 millisecond')
+                END,
+                updated_at = now()
+            WHERE id=$1 AND state='leased'
+            "#,
+        )
+        .bind(job_id)
+        .bind(reason)
+        .bind(retry_ms as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(QueueError::InvalidState);
+        }
+        Ok(())
+    }
 }
