@@ -1,0 +1,25 @@
+# === Rust / Cargo ===
+target/
+Cargo.lock
+
+# === Build artifacts ===
+**/*.rlib
+**/*.rmeta
+
+# === IDE / Editor ===
+.idea/
+.vscode/
+*.iml
+
+# === Logs / Runtime ===
+*.log
+*.tmp
+
+# === Environment / Secrets (adjust as needed) ===
+.env
+.env.*
+
+# === OS junk ===
+.DS_Store
+Thumbs.db
+
