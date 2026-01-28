@@ -5,5 +5,17 @@ edition = "2024"
 
 [dependencies]
 queue-core = { path = "../queue-core" }
-sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+async-trait = "0.1"
+
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+tower-http = { version = "0.5", features = ["trace"] }
