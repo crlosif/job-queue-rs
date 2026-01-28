@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "crates/queue-core",
+  "crates/queue-server",
+  "crates/queue-worker",
+  "crates/queue-cli"
+]
+
+resolver = "2"
