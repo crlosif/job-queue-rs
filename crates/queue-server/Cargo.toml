@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 queue-core = { path = "../queue-core" }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
