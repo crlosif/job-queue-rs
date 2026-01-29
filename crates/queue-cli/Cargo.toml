@@ -8,8 +8,9 @@ queue-core = { path = "../queue-core" }
 queue-worker = { path = "../queue-worker" }
 
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
 anyhow = "1"
+
+[dev-dependencies]

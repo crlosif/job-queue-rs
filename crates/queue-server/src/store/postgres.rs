@@ -97,15 +97,15 @@ impl QueueStore for PostgresStore {
               WHERE queue = $1
                 AND run_at <= now()
                 AND (
-                  state = 'queued'
-                  OR (state = 'leased' AND leased_until <= now())
+                  state = 'queued'::job_state
+                  OR (state = 'leased'::job_state AND leased_until <= now())
                 )
               ORDER BY run_at ASC, created_at ASC
               FOR UPDATE SKIP LOCKED
               LIMIT $2
             )
             UPDATE jobs j
-            SET state = 'leased',
+            SET state = 'leased'::job_state,
                 leased_until = now() + ($3::int * interval '1 millisecond'),
                 updated_at = now()
             FROM cte
@@ -145,10 +145,10 @@ impl QueueStore for PostgresStore {
         let affected = sqlx::query(
             r#"
             UPDATE jobs
-            SET state='succeeded',
-                leased_until=NULL,
-                updated_at=now()
-            WHERE id=$1 AND state='leased'
+            SET state = 'succeeded'::job_state,
+                leased_until = NULL,
+                updated_at = now()
+            WHERE id = $1 AND state = 'leased'::job_state
             "#,
         )
         .bind(job_id)
@@ -171,15 +171,15 @@ impl QueueStore for PostgresStore {
                 last_error = $2,
                 leased_until = NULL,
                 state = CASE
-                  WHEN (attempts + 1) >= max_attempts THEN 'dead'
-                  ELSE 'queued'
+                  WHEN (attempts + 1) >= max_attempts THEN 'dead'::job_state
+                  ELSE 'queued'::job_state
                 END,
                 run_at = CASE
                   WHEN (attempts + 1) >= max_attempts THEN run_at
                   ELSE now() + ($3::int * interval '1 millisecond')
                 END,
                 updated_at = now()
-            WHERE id=$1 AND state='leased'
+            WHERE id = $1 AND state = 'leased'::job_state
             "#,
         )
         .bind(job_id)
