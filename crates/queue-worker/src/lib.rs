@@ -129,10 +129,22 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
     let job_id = job.id;
 
     // Example handler: just log payload
-    tracing::info!(job_id=%job_id, queue=%job.queue, attempts=job.attempts, payload=%job.payload, "processing job");
+    let span = tracing::info_span!(
+        "job",
+        job_id = %job_id,
+        queue = %job.queue,
+        attempts = job.attempts
+    );
+    
+    let _enter = span.enter();
+    tracing::info!(payload=%job.payload, "processing job");
 
-    // If you want to simulate failures:
-    // if job.payload.get("fail").and_then(|v| v.as_bool()) == Some(true) { ... }
+    // Simulate failures if requested in payload
+    if job.payload.get("fail").and_then(|v| v.as_bool()) == Some(true) {
+        tracing::warn!("simulated failure requested by payload");
+        fail(client, server_url, job_id, "simulated failure", 2_000).await?;
+        return Ok(());
+    }
 
     // Success => ack
     ack(client, server_url, job_id).await?;
