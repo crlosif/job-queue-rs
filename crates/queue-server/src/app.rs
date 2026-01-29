@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use queue_core::{EnqueueRequest, EnqueueResponse, Job, JobId, QueueError, QueueStore};
 
@@ -45,11 +45,7 @@ async fn enqueue_job(
     State(state): State<AppState>,
     Json(req): Json<EnqueueRequest>,
 ) -> Result<Json<EnqueueResponse>, (StatusCode, String)> {
-    let job_id = state
-        .store
-        .enqueue(req)
-        .await
-        .map_err(map_err)?;
+    let job_id = state.store.enqueue(req).await.map_err(map_err)?;
 
     Ok(Json(EnqueueResponse { job_id }))
 }
@@ -81,7 +77,11 @@ async fn fail_job(
     Json(req): Json<FailRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let retry_ms = req.retry_ms.unwrap_or(5_000);
-    state.store.fail(id, &req.reason, retry_ms).await.map_err(map_err)?;
+    state
+        .store
+        .fail(id, &req.reason, retry_ms)
+        .await
+        .map_err(map_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -11,8 +11,8 @@ use queue_server::store::postgres::PostgresStore;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 async fn setup() -> anyhow::Result<PostgresStore> {
-    let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set for integration tests")?;
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL must be set for integration tests")?;
 
     let pool: PgPool = PgPoolOptions::new()
         .max_connections(5)
@@ -22,9 +22,7 @@ async fn setup() -> anyhow::Result<PostgresStore> {
     MIGRATOR.run(&pool).await?;
 
     // Clean slate per test run
-    sqlx::query("TRUNCATE TABLE jobs")
-        .execute(&pool)
-        .await?;
+    sqlx::query("TRUNCATE TABLE jobs").execute(&pool).await?;
 
     Ok(PostgresStore::new(pool))
 }
@@ -34,12 +32,14 @@ async fn setup() -> anyhow::Result<PostgresStore> {
 async fn enqueue_and_lease_and_ack() -> anyhow::Result<()> {
     let store = setup().await?;
 
-    let id = store.enqueue(EnqueueRequest {
-        queue: "default".to_string(),
-        payload: json!({"hello":"world"}),
-        max_attempts: Some(3),
-        run_at: None,
-    }).await?;
+    let id = store
+        .enqueue(EnqueueRequest {
+            queue: "default".to_string(),
+            payload: json!({"hello":"world"}),
+            max_attempts: Some(3),
+            run_at: None,
+        })
+        .await?;
 
     let jobs = store.lease("default", 10, 5_000).await?;
     assert_eq!(jobs.len(), 1);
@@ -54,12 +54,14 @@ async fn enqueue_and_lease_and_ack() -> anyhow::Result<()> {
 async fn fail_retries_then_dead() -> anyhow::Result<()> {
     let store = setup().await?;
 
-    let id = store.enqueue(EnqueueRequest {
-        queue: "default".to_string(),
-        payload: json!({"task":"x"}),
-        max_attempts: Some(2),
-        run_at: None,
-    }).await?;
+    let id = store
+        .enqueue(EnqueueRequest {
+            queue: "default".to_string(),
+            payload: json!({"task":"x"}),
+            max_attempts: Some(2),
+            run_at: None,
+        })
+        .await?;
 
     // 1st lease -> fail -> should retry (run_at = now + 100ms)
     let jobs = store.lease("default", 1, 1_000).await?;
@@ -87,12 +89,14 @@ async fn fail_retries_then_dead() -> anyhow::Result<()> {
 async fn lease_expiration_allows_reclaim() -> anyhow::Result<()> {
     let store = setup().await?;
 
-    let _id = store.enqueue(EnqueueRequest {
-        queue: "default".to_string(),
-        payload: json!({"k":"v"}),
-        max_attempts: Some(3),
-        run_at: None,
-    }).await?;
+    let _id = store
+        .enqueue(EnqueueRequest {
+            queue: "default".to_string(),
+            payload: json!({"k":"v"}),
+            max_attempts: Some(3),
+            run_at: None,
+        })
+        .await?;
 
     // lease for 100ms
     let jobs1 = store.lease("default", 10, 100).await?;

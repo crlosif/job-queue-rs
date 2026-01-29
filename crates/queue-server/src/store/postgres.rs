@@ -36,18 +36,34 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Result<Job, QueueError> {
         .map_err(|e| QueueError::Database(e.to_string()))?;
 
     Ok(Job {
-        id: row.try_get::<Uuid, _>("id").map_err(|e| QueueError::Database(e.to_string()))?,
-        queue: row.try_get::<String, _>("queue").map_err(|e| QueueError::Database(e.to_string()))?,
-        payload: row.try_get::<Value, _>("payload").map_err(|e| QueueError::Database(e.to_string()))?,
+        id: row
+            .try_get::<Uuid, _>("id")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
+        queue: row
+            .try_get::<String, _>("queue")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
+        payload: row
+            .try_get::<Value, _>("payload")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
         state: parse_state(&state_str)?,
-        attempts: row.try_get::<i32, _>("attempts").map_err(|e| QueueError::Database(e.to_string()))?,
-        max_attempts: row.try_get::<i32, _>("max_attempts").map_err(|e| QueueError::Database(e.to_string()))?,
-        run_at: row.try_get::<DateTime<Utc>, _>("run_at").map_err(|e| QueueError::Database(e.to_string()))?,
+        attempts: row
+            .try_get::<i32, _>("attempts")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
+        max_attempts: row
+            .try_get::<i32, _>("max_attempts")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
+        run_at: row
+            .try_get::<DateTime<Utc>, _>("run_at")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
         leased_until: row
             .try_get::<Option<DateTime<Utc>>, _>("leased_until")
             .map_err(|e| QueueError::Database(e.to_string()))?,
-        created_at: row.try_get::<DateTime<Utc>, _>("created_at").map_err(|e| QueueError::Database(e.to_string()))?,
-        updated_at: row.try_get::<DateTime<Utc>, _>("updated_at").map_err(|e| QueueError::Database(e.to_string()))?,
+        created_at: row
+            .try_get::<DateTime<Utc>, _>("created_at")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
+        updated_at: row
+            .try_get::<DateTime<Utc>, _>("updated_at")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
     })
 }
 
@@ -73,7 +89,9 @@ impl QueueStore for PostgresStore {
         .await
         .map_err(|e| QueueError::Database(e.to_string()))?;
 
-        let id: Uuid = row.try_get("id").map_err(|e| QueueError::Database(e.to_string()))?;
+        let id: Uuid = row
+            .try_get("id")
+            .map_err(|e| QueueError::Database(e.to_string()))?;
         Ok(id)
     }
 

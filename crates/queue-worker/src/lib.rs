@@ -6,16 +6,17 @@ use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub struct WorkerConfig {
-    pub server_url: String,      // e.g. http://localhost:8080
-    pub queue: String,           // e.g. default
-    pub concurrency: usize,       // e.g. 10
-    pub lease_ms: i64,            // e.g. 30000
-    pub poll_interval_ms: u64,    // e.g. 500
+    pub server_url: String,    // e.g. http://localhost:8080
+    pub queue: String,         // e.g. default
+    pub concurrency: usize,    // e.g. 10
+    pub lease_ms: i64,         // e.g. 30000
+    pub poll_interval_ms: u64, // e.g. 500
 }
 
 impl WorkerConfig {
     pub fn from_env() -> Self {
-        let server_url = std::env::var("QUEUE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let server_url =
+            std::env::var("QUEUE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         let queue = std::env::var("QUEUE_NAME").unwrap_or_else(|_| "default".to_string());
         let concurrency = std::env::var("CONCURRENCY")
             .ok()
@@ -82,16 +83,14 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
         let resp = client.post(&lease_url).json(&lease_req).send().await;
 
         let jobs = match resp {
-            Ok(r) if r.status().is_success() => {
-                match r.json::<LeaseResponse>().await {
-                    Ok(body) => body.jobs,
-                    Err(e) => {
-                        tracing::warn!(error=%e, "failed to parse lease response");
-                        tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
-                        continue;
-                    }
+            Ok(r) if r.status().is_success() => match r.json::<LeaseResponse>().await {
+                Ok(body) => body.jobs,
+                Err(e) => {
+                    tracing::warn!(error=%e, "failed to parse lease response");
+                    tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
+                    continue;
                 }
-            }
+            },
             Ok(r) => {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
@@ -141,7 +140,11 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
 }
 
 async fn ack(client: &Client, server_url: &str, job_id: JobId) -> anyhow::Result<()> {
-    let url = format!("{}/v1/jobs/{}/ack", server_url.trim_end_matches('/'), job_id);
+    let url = format!(
+        "{}/v1/jobs/{}/ack",
+        server_url.trim_end_matches('/'),
+        job_id
+    );
     let r = client.post(url).send().await?;
     if !r.status().is_success() {
         let status = r.status();
@@ -152,9 +155,22 @@ async fn ack(client: &Client, server_url: &str, job_id: JobId) -> anyhow::Result
 }
 
 #[allow(dead_code)]
-async fn fail(client: &Client, server_url: &str, job_id: JobId, reason: &str, retry_ms: i64) -> anyhow::Result<()> {
-    let url = format!("{}/v1/jobs/{}/fail", server_url.trim_end_matches('/'), job_id);
-    let body = FailRequest { reason: reason.to_string(), retry_ms: Some(retry_ms) };
+async fn fail(
+    client: &Client,
+    server_url: &str,
+    job_id: JobId,
+    reason: &str,
+    retry_ms: i64,
+) -> anyhow::Result<()> {
+    let url = format!(
+        "{}/v1/jobs/{}/fail",
+        server_url.trim_end_matches('/'),
+        job_id
+    );
+    let body = FailRequest {
+        reason: reason.to_string(),
+        retry_ms: Some(retry_ms),
+    };
     let r = client.post(url).json(&body).send().await?;
     if !r.status().is_success() {
         let status = r.status();

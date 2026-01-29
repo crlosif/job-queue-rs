@@ -60,7 +60,11 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", text);
         }
 
-        Commands::Enqueue { queue, json, max_attempts } => {
+        Commands::Enqueue {
+            queue,
+            json,
+            max_attempts,
+        } => {
             let payload: Value = serde_json::from_str(&json).context("invalid JSON payload")?;
 
             let req = EnqueueRequest {
@@ -84,7 +88,12 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", body.job_id);
         }
 
-        Commands::Worker { queue, concurrency, lease_ms, poll_interval_ms } => {
+        Commands::Worker {
+            queue,
+            concurrency,
+            lease_ms,
+            poll_interval_ms,
+        } => {
             let cfg = queue_worker::WorkerConfig {
                 server_url: base,
                 queue,

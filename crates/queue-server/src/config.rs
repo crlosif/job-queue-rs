@@ -17,4 +17,3 @@ impl Config {
         Self { bind, database_url }
     }
 }
-
