@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use crate::metrics;
 
 use axum::{
     Json, Router,
@@ -38,6 +39,7 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/lease", post(lease_jobs))
         .route("/v1/jobs/:id/ack", post(ack_job))
         .route("/v1/jobs/:id/fail", post(fail_job))
+        .route("/metrics", get(|| async { metrics::gather() }))
         .with_state(state)
 }
 
@@ -47,6 +49,7 @@ async fn enqueue_job(
 ) -> Result<Json<EnqueueResponse>, (StatusCode, String)> {
     let job_id = state.store.enqueue(req).await.map_err(map_err)?;
 
+    metrics::JOBS_ENQUEUED.inc();
     Ok(Json(EnqueueResponse { job_id }))
 }
 
@@ -60,6 +63,9 @@ async fn lease_jobs(
         .await
         .map_err(map_err)?;
 
+    metrics::JOBS_LEASED.inc_by(jobs.len() as u64);
+    metrics::INFLIGHT_LEASES.set(jobs.len() as i64);
+
     Ok(Json(LeaseResponse { jobs }))
 }
 
@@ -68,6 +74,7 @@ async fn ack_job(
     Path(id): Path<JobId>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     state.store.ack(id).await.map_err(map_err)?;
+    metrics::JOBS_ACKED.inc();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -82,6 +89,7 @@ async fn fail_job(
         .fail(id, &req.reason, retry_ms)
         .await
         .map_err(map_err)?;
+    metrics::JOBS_FAILED.inc();
     Ok(StatusCode::NO_CONTENT)
 }
 

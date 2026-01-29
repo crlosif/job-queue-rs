@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod metrics;
 mod store;
 
 use std::sync::Arc;
@@ -14,6 +15,8 @@ use store::postgres::PostgresStore;
 
 #[tokio::main]
 async fn main() {
+    metrics::init_metrics();
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

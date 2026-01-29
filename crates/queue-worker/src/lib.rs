@@ -135,7 +135,7 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
         queue = %job.queue,
         attempts = job.attempts
     );
-    
+
     let _enter = span.enter();
     tracing::info!(payload=%job.payload, "processing job");
 
