@@ -13,10 +13,6 @@ impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
 }
 
 fn parse_state(s: &str) -> Result<JobState, QueueError> {
