@@ -42,6 +42,8 @@ pub struct EnqueueRequest {
     pub max_attempts: Option<i32>,
     pub run_at: Option<DateTime<Utc>>,
     pub priority: Option<i32>,
+    /// If set, duplicate enqueues with the same key within 24h return the same job_id (dedupe).
+    pub idempotency_key: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EnqueueResponse {

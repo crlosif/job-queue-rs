@@ -13,6 +13,98 @@ impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Enqueue with idempotency key: return existing job_id if key seen within window, else insert and record.
+    async fn enqueue_with_idempotency(
+        &self,
+        idempotency_key: &str,
+        req: &EnqueueRequest,
+        max_attempts: i32,
+        priority: i32,
+    ) -> Result<JobId, QueueError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| QueueError::Database(e.to_string()))?;
+
+        // Return existing job_id if key was used within the window (24h).
+        let existing = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT job_id FROM enqueue_idempotency
+            WHERE idempotency_key = $1
+              AND created_at > now() - (($2::text || ' hours')::interval)
+            "#,
+        )
+        .bind(idempotency_key)
+        .bind(IDEMPOTENCY_WINDOW_HOURS)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?;
+
+        if let Some(job_id) = existing {
+            tx.commit()
+                .await
+                .map_err(|e| QueueError::Database(e.to_string()))?;
+            return Ok(job_id);
+        }
+
+        let id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO jobs (id, queue, payload, max_attempts, run_at, priority)
+            VALUES ($1, $2, $3, $4, COALESCE($5, now()), $6)
+            "#,
+        )
+        .bind(id)
+        .bind(&req.queue)
+        .bind(&req.payload)
+        .bind(max_attempts)
+        .bind(req.run_at)
+        .bind(priority)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?;
+
+        let insert_idempotency = sqlx::query(
+            r#"
+            INSERT INTO enqueue_idempotency (idempotency_key, job_id, created_at)
+            VALUES ($1, $2, now())
+            "#,
+        )
+        .bind(idempotency_key)
+        .bind(id)
+        .execute(&mut *tx)
+        .await;
+
+        match insert_idempotency {
+            Ok(_) => {
+                tx.commit()
+                    .await
+                    .map_err(|e| QueueError::Database(e.to_string()))?;
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                // Unique violation: another request won the race; return existing job_id.
+                if is_unique_violation(&e) {
+                    let row = sqlx::query_scalar::<_, Uuid>(
+                        r#"SELECT job_id FROM enqueue_idempotency WHERE idempotency_key = $1"#,
+                    )
+                    .bind(idempotency_key)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| QueueError::Database(e.to_string()))?;
+                    return Ok(row);
+                }
+                Err(QueueError::Database(e.to_string()))
+            }
+        }
+    }
+}
+
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("23505"))
 }
 
 fn parse_state(s: &str) -> Result<JobState, QueueError> {
@@ -66,13 +158,19 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Result<Job, QueueError> {
     })
 }
 
+const IDEMPOTENCY_WINDOW_HOURS: i64 = 24;
+
 #[async_trait::async_trait]
 impl QueueStore for PostgresStore {
     async fn enqueue(&self, req: EnqueueRequest) -> Result<JobId, QueueError> {
-        let id: Uuid = Uuid::new_v4();
         let max_attempts: i32 = req.max_attempts.unwrap_or(5);
         let priority: i32 = req.priority.unwrap_or(0);
 
+        if let Some(ref key) = req.idempotency_key {
+            return self.enqueue_with_idempotency(key, &req, max_attempts, priority).await;
+        }
+
+        let id: Uuid = Uuid::new_v4();
         let row = sqlx::query(
             r#"
             INSERT INTO jobs (id, queue, payload, max_attempts, run_at, priority)

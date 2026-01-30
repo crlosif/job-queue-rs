@@ -22,7 +22,8 @@ async fn setup() -> anyhow::Result<PostgresStore> {
     MIGRATOR.run(&pool).await?;
 
     // Clean slate per test run
-    sqlx::query("TRUNCATE TABLE jobs").execute(&pool).await?;
+    sqlx::query("TRUNCATE TABLE enqueue_idempotency CASCADE").execute(&pool).await?;
+    sqlx::query("TRUNCATE TABLE jobs CASCADE").execute(&pool).await?;
 
     Ok(PostgresStore::new(pool))
 }
@@ -39,6 +40,7 @@ async fn enqueue_and_lease_and_ack() -> anyhow::Result<()> {
             max_attempts: Some(3),
             run_at: None,
             priority: None,
+            idempotency_key: None,
         })
         .await?;
 
@@ -62,6 +64,7 @@ async fn fail_retries_then_dead() -> anyhow::Result<()> {
             max_attempts: Some(2),
             run_at: None,
             priority: None,
+            idempotency_key: None,
         })
         .await?;
 
@@ -98,6 +101,7 @@ async fn lease_expiration_allows_reclaim() -> anyhow::Result<()> {
             max_attempts: Some(3),
             run_at: None,
             priority: None,
+            idempotency_key: None,
         })
         .await?;
 
@@ -116,5 +120,26 @@ async fn lease_expiration_allows_reclaim() -> anyhow::Result<()> {
     let jobs3 = store.lease("default", 10, 100).await?;
     assert_eq!(jobs3.len(), 1);
 
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn idempotency_key_dedupes_enqueue() -> anyhow::Result<()> {
+    let store = setup().await?;
+
+    let req = |key: Option<String>| EnqueueRequest {
+        queue: "default".to_string(),
+        payload: json!({"dedupe":"test"}),
+        max_attempts: Some(3),
+        run_at: None,
+        priority: None,
+        idempotency_key: key,
+    };
+
+    let id1 = store.enqueue(req(Some("my-key-123".to_string()))).await?;
+    let id2 = store.enqueue(req(Some("my-key-123".to_string()))).await?;
+
+    assert_eq!(id1, id2, "same idempotency key should return same job_id");
     Ok(())
 }

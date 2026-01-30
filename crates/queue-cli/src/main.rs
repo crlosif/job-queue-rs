@@ -30,6 +30,10 @@ enum Commands {
         /// Priority (higher = processed first; default 0)
         #[arg(long)]
         priority: Option<i32>,
+
+        /// Idempotency key: same key within 24h returns the same job_id (dedupe)
+        #[arg(long)]
+        idempotency_key: Option<String>,
     },
 
     /// Ping server health endpoint
@@ -69,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
             json,
             max_attempts,
             priority,
+            idempotency_key,
         } => {
             let payload: Value = serde_json::from_str(&json).context("invalid JSON payload")?;
 
@@ -78,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 max_attempts,
                 run_at: None,
                 priority,
+                idempotency_key,
             };
 
             let url = format!("{}/v1/jobs", base);
