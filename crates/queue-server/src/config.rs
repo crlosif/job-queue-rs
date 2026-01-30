@@ -17,6 +17,10 @@ impl Config {
 
         let admin_token = std::env::var("ADMIN_TOKEN").ok();
 
-        Self { bind, database_url, admin_token }
+        Self {
+            bind,
+            database_url,
+            admin_token,
+        }
     }
 }

@@ -1,8 +1,8 @@
 mod app;
+mod auth;
 mod config;
 mod metrics;
 mod store;
-mod auth;
 
 use std::sync::Arc;
 
@@ -38,10 +38,11 @@ async fn main() {
 
     let state = AppState { store };
 
-    let admin_auth = auth::AdminAuth { token: cfg.admin_token.clone() };
+    let admin_auth = auth::AdminAuth {
+        token: cfg.admin_token.clone(),
+    };
 
     let app = app::build_app(state, admin_auth).layer(TraceLayer::new_for_http());
-
 
     tracing::info!("listening on {}", cfg.bind);
 

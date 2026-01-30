@@ -13,6 +13,7 @@ pub struct WorkerConfig {
     pub concurrency: usize,    // e.g. 10
     pub lease_ms: i64,         // e.g. 30000
     pub poll_interval_ms: u64, // e.g. 500
+    pub heartbeat_interval_ms: u64,
 }
 
 impl WorkerConfig {
@@ -33,12 +34,18 @@ impl WorkerConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(500);
 
+        let heartbeat_interval_ms = std::env::var("HEARTBEAT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((lease_ms as u64 / 2).max(1000));
+
         Self {
             server_url,
             queue,
             concurrency,
             lease_ms,
             poll_interval_ms,
+            heartbeat_interval_ms,
         }
     }
 }
@@ -144,25 +151,57 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
 async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Result<()> {
     let job_id = job.id;
 
-    // Example handler: just log payload
     let span = tracing::info_span!(
         "job",
         job_id = %job_id,
         queue = %job.queue,
         attempts = job.attempts
     );
-
     let _enter = span.enter();
+
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let hb_client = client.clone();
+    let hb_server = server_url.to_string();
+
+    // heartbeat task
+    let extend_ms = 60_000i64; // simple default extension per heartbeat tick
+    let hb_handle = tokio::spawn(async move {
+        loop {
+            if *stop_rx.borrow() {
+                break;
+            }
+            // wait
+            tokio::select! {
+                _ = stop_rx.changed() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_millis(5_000)) => {}
+            }
+            if *stop_rx.borrow() {
+                break;
+            }
+
+            if let Err(e) = heartbeat(&hb_client, &hb_server, job_id, extend_ms).await {
+                tracing::warn!(error=%e, "heartbeat failed");
+            } else {
+                tracing::debug!("heartbeat ok");
+            }
+        }
+    });
+
+    // ---- actual handler (example)
     tracing::info!(payload=%job.payload, "processing job");
 
-    // Simulate failures if requested in payload
+    // Optional failure simulation
     if job.payload.get("fail").and_then(|v| v.as_bool()) == Some(true) {
         tracing::warn!("simulated failure requested by payload");
+        stop_tx.send(true).ok();
+        let _ = hb_handle.await;
         fail(client, server_url, job_id, "simulated failure", 2_000).await?;
         return Ok(());
     }
 
-    // Success => ack
+    // success
+    stop_tx.send(true).ok();
+    let _ = hb_handle.await;
     ack(client, server_url, job_id).await?;
     Ok(())
 }
@@ -204,6 +243,27 @@ async fn fail(
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         anyhow::bail!("fail failed: {} {}", status, text);
+    }
+    Ok(())
+}
+
+async fn heartbeat(
+    client: &Client,
+    server_url: &str,
+    job_id: JobId,
+    extend_ms: i64,
+) -> anyhow::Result<()> {
+    let url = format!(
+        "{}/v1/jobs/{}/heartbeat",
+        server_url.trim_end_matches('/'),
+        job_id
+    );
+    let body = serde_json::json!({ "extend_ms": extend_ms });
+    let r = client.post(url).json(&body).send().await?;
+    if !r.status().is_success() {
+        let status = r.status();
+        let text = r.text().await.unwrap_or_default();
+        anyhow::bail!("heartbeat failed: {} {}", status, text);
     }
     Ok(())
 }

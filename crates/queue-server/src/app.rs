@@ -53,7 +53,10 @@ pub struct DeadJobsResponse {
 
 async fn metrics_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         metrics::gather(),
     )
 }
@@ -74,11 +77,12 @@ pub fn build_app(state: AppState, admin_auth: AdminAuth) -> Router {
         .route("/v1/admin/queues/:queue/dead", get(admin_dead))
         .route("/v1/admin/jobs/:id/requeue", post(admin_requeue))
         .with_state(admin_state.clone())
-        .route_layer(middleware::from_fn_with_state(admin_state, admin_auth_middleware));
+        .route_layer(middleware::from_fn_with_state(
+            admin_state,
+            admin_auth_middleware,
+        ));
 
-    Router::new()
-        .merge(public.with_state(state))
-        .merge(admin)
+    Router::new().merge(public.with_state(state)).merge(admin)
 }
 
 async fn admin_auth_middleware(
@@ -92,7 +96,6 @@ async fn admin_auth_middleware(
         Err(StatusCode::UNAUTHORIZED)
     }
 }
-
 
 async fn enqueue_job(
     State(state): State<AppState>,

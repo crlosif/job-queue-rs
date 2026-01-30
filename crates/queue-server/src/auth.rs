@@ -6,10 +6,7 @@ pub struct AdminAuth {
 }
 
 /// Returns true if the request is authorized (no token configured, or valid Bearer token).
-pub fn check_admin_auth(
-    auth: &AdminAuth,
-    req: &Request<axum::body::Body>,
-) -> bool {
+pub fn check_admin_auth(auth: &AdminAuth, req: &Request<axum::body::Body>) -> bool {
     let Some(expected) = &auth.token else {
         return true;
     };
