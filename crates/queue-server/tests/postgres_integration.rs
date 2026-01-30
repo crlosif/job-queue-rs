@@ -22,8 +22,12 @@ async fn setup() -> anyhow::Result<PostgresStore> {
     MIGRATOR.run(&pool).await?;
 
     // Clean slate per test run
-    sqlx::query("TRUNCATE TABLE enqueue_idempotency CASCADE").execute(&pool).await?;
-    sqlx::query("TRUNCATE TABLE jobs CASCADE").execute(&pool).await?;
+    sqlx::query("TRUNCATE TABLE enqueue_idempotency CASCADE")
+        .execute(&pool)
+        .await?;
+    sqlx::query("TRUNCATE TABLE jobs CASCADE")
+        .execute(&pool)
+        .await?;
 
     Ok(PostgresStore::new(pool))
 }

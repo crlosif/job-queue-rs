@@ -167,7 +167,9 @@ impl QueueStore for PostgresStore {
         let priority: i32 = req.priority.unwrap_or(0);
 
         if let Some(ref key) = req.idempotency_key {
-            return self.enqueue_with_idempotency(key, &req, max_attempts, priority).await;
+            return self
+                .enqueue_with_idempotency(key, &req, max_attempts, priority)
+                .await;
         }
 
         let id: Uuid = Uuid::new_v4();
