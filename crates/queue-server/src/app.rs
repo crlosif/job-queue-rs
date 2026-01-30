@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::metrics;
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
@@ -37,6 +37,18 @@ pub struct HeartbeatRequest {
     pub extend_ms: i64,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct DepthResponse {
+    pub queue: String,
+    pub depth: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DeadJobsResponse {
+    pub queue: String,
+    pub jobs: Vec<Job>,
+}
+
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -46,6 +58,9 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/jobs/:id/fail", post(fail_job))
         .route("/metrics", get(|| async { metrics::gather() }))
         .route("/v1/jobs/:id/heartbeat", post(heartbeat_job))
+        .route("/v1/admin/queues/:queue/depth", get(admin_depth))
+        .route("/v1/admin/queues/:queue/dead", get(admin_dead))
+        .route("/v1/admin/jobs/:id/requeue", post(admin_requeue))
         .with_state(state)
 }
 
@@ -104,7 +119,48 @@ async fn heartbeat_job(
     Path(id): Path<JobId>,
     Json(req): Json<HeartbeatRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state.store.heartbeat(id, req.extend_ms).await.map_err(map_err)?;
+    state
+        .store
+        .heartbeat(id, req.extend_ms)
+        .await
+        .map_err(map_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+use axum::extract::Query;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DeadQuery {
+    pub limit: Option<i64>,
+}
+
+async fn admin_depth(
+    State(state): State<AppState>,
+    Path(queue): Path<String>,
+) -> Result<Json<DepthResponse>, (StatusCode, String)> {
+    let depth = state.store.queue_depth(&queue).await.map_err(map_err)?;
+    Ok(Json(DepthResponse { queue, depth }))
+}
+
+async fn admin_dead(
+    State(state): State<AppState>,
+    Path(queue): Path<String>,
+    Query(q): Query<DeadQuery>,
+) -> Result<Json<DeadJobsResponse>, (StatusCode, String)> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let jobs = state
+        .store
+        .list_dead(&queue, limit)
+        .await
+        .map_err(map_err)?;
+    Ok(Json(DeadJobsResponse { queue, jobs }))
+}
+
+async fn admin_requeue(
+    State(state): State<AppState>,
+    Path(id): Path<JobId>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.store.requeue_dead(id).await.map_err(map_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

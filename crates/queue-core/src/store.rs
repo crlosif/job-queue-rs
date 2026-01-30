@@ -17,4 +17,10 @@ pub trait QueueStore: Send + Sync {
 
     /// Extend lease for a currently leased job.
     async fn heartbeat(&self, job_id: JobId, extend_ms: i64) -> Result<(), QueueError>;
+
+    async fn queue_depth(&self, queue: &str) -> Result<i64, QueueError>;
+
+    async fn list_dead(&self, queue: &str, limit: i64) -> Result<Vec<Job>, QueueError>;
+
+    async fn requeue_dead(&self, job_id: JobId) -> Result<(), QueueError>;
 }

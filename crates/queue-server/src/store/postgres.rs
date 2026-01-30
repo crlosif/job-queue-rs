@@ -232,4 +232,78 @@ impl QueueStore for PostgresStore {
         }
         Ok(())
     }
+
+    async fn queue_depth(&self, queue: &str) -> Result<i64, QueueError> {
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*)::bigint AS cnt
+            FROM jobs
+            WHERE queue = $1
+              AND state = 'queued'
+              AND run_at <= now()
+            "#,
+        )
+        .bind(queue)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?;
+
+        let cnt: i64 = row
+            .try_get("cnt")
+            .map_err(|e| QueueError::Database(e.to_string()))?;
+        Ok(cnt)
+    }
+
+    async fn list_dead(&self, queue: &str, limit: i64) -> Result<Vec<Job>, QueueError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+              id, queue, payload, state::text as state,
+              attempts, max_attempts, run_at, leased_until,
+              created_at, updated_at
+            FROM jobs
+            WHERE queue = $1
+              AND state = 'dead'
+            ORDER BY updated_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(queue)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(row_to_job(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn requeue_dead(&self, job_id: JobId) -> Result<(), QueueError> {
+        let affected = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET state = 'queued',
+                attempts = 0,
+                last_error = NULL,
+                leased_until = NULL,
+                run_at = now(),
+                updated_at = now()
+            WHERE id = $1
+              AND state = 'dead'
+            "#,
+        )
+        .bind(job_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(QueueError::InvalidState);
+        }
+        Ok(())
+    }
 }
