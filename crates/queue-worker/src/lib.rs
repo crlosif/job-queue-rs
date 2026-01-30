@@ -14,6 +14,8 @@ pub struct WorkerConfig {
     pub lease_ms: i64,         // e.g. 30000
     pub poll_interval_ms: u64, // e.g. 500
     pub heartbeat_interval_ms: u64,
+    /// If set, sent as Authorization: Bearer <token> on all API requests.
+    pub api_token: Option<String>,
 }
 
 impl WorkerConfig {
@@ -39,6 +41,8 @@ impl WorkerConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or((lease_ms as u64 / 2).max(1000));
 
+        let api_token = std::env::var("API_TOKEN").ok();
+
         Self {
             server_url,
             queue,
@@ -46,7 +50,19 @@ impl WorkerConfig {
             lease_ms,
             poll_interval_ms,
             heartbeat_interval_ms,
+            api_token,
         }
+    }
+}
+
+/// Add optional Bearer token to a request builder.
+fn auth_header(
+    req: reqwest::RequestBuilder,
+    api_token: Option<&String>,
+) -> reqwest::RequestBuilder {
+    match api_token {
+        Some(t) => req.header("Authorization", format!("Bearer {}", t)),
+        None => req,
     }
 }
 
@@ -105,7 +121,10 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
         };
 
         let lease_url = format!("{}/v1/lease", cfg.server_url.trim_end_matches('/'));
-        let resp = client.post(&lease_url).json(&lease_req).send().await;
+        let resp = auth_header(client.post(&lease_url), cfg.api_token.as_ref())
+            .json(&lease_req)
+            .send()
+            .await;
 
         let jobs = match resp {
             Ok(r) if r.status().is_success() => match r.json::<LeaseResponse>().await {
@@ -131,10 +150,11 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
             let permit = sem.clone().acquire_owned().await?;
             let client = client.clone();
             let server_url = cfg.server_url.clone();
+            let api_token = cfg.api_token.clone();
 
             let h = tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(e) = process_one(&client, &server_url, job).await {
+                if let Err(e) = process_one(&client, &server_url, api_token.as_ref(), job).await {
                     tracing::warn!(error=%e, "job processing task failed");
                 }
             });
@@ -148,7 +168,12 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Result<()> {
+async fn process_one(
+    client: &Client,
+    server_url: &str,
+    api_token: Option<&String>,
+    job: Job,
+) -> anyhow::Result<()> {
     let job_id = job.id;
 
     let span = tracing::info_span!(
@@ -162,6 +187,7 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
     let hb_client = client.clone();
     let hb_server = server_url.to_string();
+    let hb_token = api_token.cloned();
 
     // heartbeat task
     let extend_ms = 60_000i64; // simple default extension per heartbeat tick
@@ -179,7 +205,9 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
                 break;
             }
 
-            if let Err(e) = heartbeat(&hb_client, &hb_server, job_id, extend_ms).await {
+            if let Err(e) =
+                heartbeat(&hb_client, &hb_server, hb_token.as_ref(), job_id, extend_ms).await
+            {
                 tracing::warn!(error=%e, "heartbeat failed");
             } else {
                 tracing::debug!("heartbeat ok");
@@ -195,24 +223,37 @@ async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Res
         tracing::warn!("simulated failure requested by payload");
         stop_tx.send(true).ok();
         let _ = hb_handle.await;
-        fail(client, server_url, job_id, "simulated failure", 2_000).await?;
+        fail(
+            client,
+            server_url,
+            api_token,
+            job_id,
+            "simulated failure",
+            2_000,
+        )
+        .await?;
         return Ok(());
     }
 
     // success
     stop_tx.send(true).ok();
     let _ = hb_handle.await;
-    ack(client, server_url, job_id).await?;
+    ack(client, server_url, api_token, job_id).await?;
     Ok(())
 }
 
-async fn ack(client: &Client, server_url: &str, job_id: JobId) -> anyhow::Result<()> {
+async fn ack(
+    client: &Client,
+    server_url: &str,
+    api_token: Option<&String>,
+    job_id: JobId,
+) -> anyhow::Result<()> {
     let url = format!(
         "{}/v1/jobs/{}/ack",
         server_url.trim_end_matches('/'),
         job_id
     );
-    let r = client.post(url).send().await?;
+    let r = auth_header(client.post(url), api_token).send().await?;
     if !r.status().is_success() {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
@@ -225,6 +266,7 @@ async fn ack(client: &Client, server_url: &str, job_id: JobId) -> anyhow::Result
 async fn fail(
     client: &Client,
     server_url: &str,
+    api_token: Option<&String>,
     job_id: JobId,
     reason: &str,
     retry_ms: i64,
@@ -238,7 +280,10 @@ async fn fail(
         reason: reason.to_string(),
         retry_ms: Some(retry_ms),
     };
-    let r = client.post(url).json(&body).send().await?;
+    let r = auth_header(client.post(url), api_token)
+        .json(&body)
+        .send()
+        .await?;
     if !r.status().is_success() {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
@@ -250,6 +295,7 @@ async fn fail(
 async fn heartbeat(
     client: &Client,
     server_url: &str,
+    api_token: Option<&String>,
     job_id: JobId,
     extend_ms: i64,
 ) -> anyhow::Result<()> {
@@ -259,7 +305,10 @@ async fn heartbeat(
         job_id
     );
     let body = serde_json::json!({ "extend_ms": extend_ms });
-    let r = client.post(url).json(&body).send().await?;
+    let r = auth_header(client.post(url), api_token)
+        .json(&body)
+        .send()
+        .await?;
     if !r.status().is_success() {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
