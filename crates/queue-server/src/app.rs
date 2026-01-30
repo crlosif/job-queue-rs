@@ -32,6 +32,11 @@ pub struct FailRequest {
     pub retry_ms: Option<i64>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct HeartbeatRequest {
+    pub extend_ms: i64,
+}
+
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -40,6 +45,7 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/jobs/:id/ack", post(ack_job))
         .route("/v1/jobs/:id/fail", post(fail_job))
         .route("/metrics", get(|| async { metrics::gather() }))
+        .route("/v1/jobs/:id/heartbeat", post(heartbeat_job))
         .with_state(state)
 }
 
@@ -90,6 +96,15 @@ async fn fail_job(
         .await
         .map_err(map_err)?;
     metrics::JOBS_FAILED.inc();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn heartbeat_job(
+    State(state): State<AppState>,
+    Path(id): Path<JobId>,
+    Json(req): Json<HeartbeatRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.store.heartbeat(id, req.extend_ms).await.map_err(map_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

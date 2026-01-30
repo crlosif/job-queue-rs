@@ -209,4 +209,27 @@ impl QueueStore for PostgresStore {
         }
         Ok(())
     }
+
+    async fn heartbeat(&self, job_id: JobId, extend_ms: i64) -> Result<(), QueueError> {
+        let affected = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET leased_until = now() + ($2::int * interval '1 millisecond'),
+                updated_at = now()
+            WHERE id = $1
+              AND state = 'leased'
+            "#,
+        )
+        .bind(job_id)
+        .bind(extend_ms as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| QueueError::Database(e.to_string()))?
+        .rows_affected();
+
+        if affected == 0 {
+            return Err(QueueError::InvalidState);
+        }
+        Ok(())
+    }
 }

@@ -14,4 +14,7 @@ pub trait QueueStore: Send + Sync {
     /// Mark a leased job as failed; retries or dead-letters based on attempts/max_attempts.
     /// retry_ms: how long to wait before retry (ignored if job becomes dead).
     async fn fail(&self, job_id: JobId, reason: &str, retry_ms: i64) -> Result<(), QueueError>;
+
+    /// Extend lease for a currently leased job.
+    async fn heartbeat(&self, job_id: JobId, extend_ms: i64) -> Result<(), QueueError>;
 }
