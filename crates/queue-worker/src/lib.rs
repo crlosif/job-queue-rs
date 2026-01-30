@@ -1,4 +1,6 @@
+use futures::future::join_all;
 use std::{sync::Arc, time::Duration};
+use tokio::task::JoinHandle;
 
 use queue_core::{Job, JobId};
 use reqwest::Client;
@@ -72,10 +74,26 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
         "worker started"
     );
 
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+
+    let mut shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
     loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                tracing::info!("worker shutdown signal received, draining tasks...");
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)) => {
+                // Instead of sleeping at end, we tick here and attempt lease each tick.
+            }
+        }
+
+        // Try lease each tick
         let lease_req = LeaseRequest {
             queue: cfg.queue.clone(),
-            limit: cfg.concurrency as i64, // simple: one batch ~= concurrency
+            limit: cfg.concurrency as i64,
             lease_ms: cfg.lease_ms,
         };
 
@@ -87,7 +105,6 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
                 Ok(body) => body.jobs,
                 Err(e) => {
                     tracing::warn!(error=%e, "failed to parse lease response");
-                    tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
                     continue;
                 }
             },
@@ -95,34 +112,33 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
                 tracing::warn!(%status, body=%text, "lease request failed");
-                tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
                 continue;
             }
             Err(e) => {
                 tracing::warn!(error=%e, "lease request error");
-                tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
                 continue;
             }
         };
-
-        if jobs.is_empty() {
-            tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
-            continue;
-        }
 
         for job in jobs {
             let permit = sem.clone().acquire_owned().await?;
             let client = client.clone();
             let server_url = cfg.server_url.clone();
 
-            tokio::spawn(async move {
+            let h = tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(e) = process_one(&client, &server_url, job).await {
                     tracing::warn!(error=%e, "job processing task failed");
                 }
             });
+            handles.push(h);
         }
     }
+
+    // Drain spawned tasks
+    join_all(handles).await;
+    tracing::info!("worker stopped");
+    Ok(())
 }
 
 async fn process_one(client: &Client, server_url: &str, job: Job) -> anyhow::Result<()> {

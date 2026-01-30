@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 queue-core = { path = "../queue-core" }
 async-trait = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 axum = "0.7"

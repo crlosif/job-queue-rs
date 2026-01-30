@@ -44,5 +44,14 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(cfg.bind)
         .await
         .expect("failed to bind");
-    axum::serve(listener, app).await.expect("server failed");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("server failed");
+    async fn shutdown_signal() {
+        // Wait for Ctrl+C
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received");
+    }
 }
