@@ -9,6 +9,10 @@ struct Cli {
     #[arg(long, default_value = "http://localhost:8080")]
     server_url: String,
 
+    /// API token for server (or set API_TOKEN env var). Used for Enqueue and Worker when set.
+    #[arg(long)]
+    api_token: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,7 +61,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.api_token.is_none() {
+        cli.api_token = std::env::var("API_TOKEN").ok();
+    }
     let base = cli.server_url.trim_end_matches('/').to_string();
 
     match cli.command {
@@ -88,7 +95,11 @@ async fn main() -> anyhow::Result<()> {
 
             let url = format!("{}/v1/jobs", base);
             let client = reqwest::Client::new();
-            let r = client.post(url).json(&req).send().await?;
+            let mut request = client.post(url).json(&req);
+            if let Some(ref t) = cli.api_token {
+                request = request.header("Authorization", format!("Bearer {}", t));
+            }
+            let r = request.send().await?;
 
             if !r.status().is_success() {
                 let status = r.status();
@@ -114,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 lease_ms,
                 poll_interval_ms,
                 heartbeat_interval_ms,
+                api_token: cli.api_token.clone(),
             };
             queue_worker::run_worker(cfg).await?;
         }
