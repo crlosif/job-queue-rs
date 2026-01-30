@@ -54,6 +54,9 @@ fn row_to_job(row: &sqlx::postgres::PgRow) -> Result<Job, QueueError> {
         leased_until: row
             .try_get::<Option<DateTime<Utc>>, _>("leased_until")
             .map_err(|e| QueueError::Database(e.to_string()))?,
+        priority: row
+            .try_get::<i32, _>("priority")
+            .map_err(|e| QueueError::Database(e.to_string()))?,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map_err(|e| QueueError::Database(e.to_string()))?,
@@ -68,11 +71,12 @@ impl QueueStore for PostgresStore {
     async fn enqueue(&self, req: EnqueueRequest) -> Result<JobId, QueueError> {
         let id: Uuid = Uuid::new_v4();
         let max_attempts: i32 = req.max_attempts.unwrap_or(5);
+        let priority: i32 = req.priority.unwrap_or(0);
 
         let row = sqlx::query(
             r#"
-            INSERT INTO jobs (id, queue, payload, max_attempts, run_at)
-            VALUES ($1, $2, $3, $4, COALESCE($5, now()))
+            INSERT INTO jobs (id, queue, payload, max_attempts, run_at, priority)
+            VALUES ($1, $2, $3, $4, COALESCE($5, now()), $6)
             RETURNING id
             "#,
         )
@@ -81,6 +85,7 @@ impl QueueStore for PostgresStore {
         .bind(req.payload)
         .bind(max_attempts)
         .bind(req.run_at)
+        .bind(priority)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| QueueError::Database(e.to_string()))?;
@@ -102,6 +107,7 @@ impl QueueStore for PostgresStore {
         // - queued && run_at <= now()
         // - leased but expired (leased_until <= now())
         //
+        // Order: higher priority first, then run_at, then created_at.
         // SKIP LOCKED prevents workers blocking each other.
         let rows = sqlx::query(
             r#"
@@ -114,7 +120,7 @@ impl QueueStore for PostgresStore {
                   state = 'queued'::job_state
                   OR (state = 'leased'::job_state AND leased_until <= now())
                 )
-              ORDER BY run_at ASC, created_at ASC
+              ORDER BY priority DESC, run_at ASC, created_at ASC
               FOR UPDATE SKIP LOCKED
               LIMIT $2
             )
@@ -133,6 +139,7 @@ impl QueueStore for PostgresStore {
               j.max_attempts,
               j.run_at,
               j.leased_until,
+              j.priority,
               j.created_at,
               j.updated_at
             "#,
@@ -260,7 +267,7 @@ impl QueueStore for PostgresStore {
             SELECT
               id, queue, payload, state::text as state,
               attempts, max_attempts, run_at, leased_until,
-              created_at, updated_at
+              priority, created_at, updated_at
             FROM jobs
             WHERE queue = $1
               AND state = 'dead'

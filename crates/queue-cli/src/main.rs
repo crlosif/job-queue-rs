@@ -26,6 +26,10 @@ enum Commands {
 
         #[arg(long)]
         max_attempts: Option<i32>,
+
+        /// Priority (higher = processed first; default 0)
+        #[arg(long)]
+        priority: Option<i32>,
     },
 
     /// Ping server health endpoint
@@ -64,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
             queue,
             json,
             max_attempts,
+            priority,
         } => {
             let payload: Value = serde_json::from_str(&json).context("invalid JSON payload")?;
 
@@ -72,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 payload,
                 max_attempts,
                 run_at: None,
+                priority,
             };
 
             let url = format!("{}/v1/jobs", base);
@@ -94,12 +100,14 @@ async fn main() -> anyhow::Result<()> {
             lease_ms,
             poll_interval_ms,
         } => {
+            let heartbeat_interval_ms = (lease_ms as u64 / 2).max(1000);
             let cfg = queue_worker::WorkerConfig {
                 server_url: base,
                 queue,
                 concurrency,
                 lease_ms,
                 poll_interval_ms,
+                heartbeat_interval_ms,
             };
             queue_worker::run_worker(cfg).await?;
         }

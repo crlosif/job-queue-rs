@@ -27,6 +27,8 @@ pub struct Job {
     pub run_at: DateTime<Utc>,
     pub leased_until: Option<DateTime<Utc>>,
 
+    pub priority: i32,
+
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -37,8 +39,8 @@ pub struct EnqueueRequest {
     pub payload: serde_json::Value,
     pub max_attempts: Option<i32>,
     pub run_at: Option<DateTime<Utc>>,
+    pub priority: Option<i32>,
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnqueueResponse {
     pub job_id: JobId,
