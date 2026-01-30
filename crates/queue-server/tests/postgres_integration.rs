@@ -38,6 +38,7 @@ async fn enqueue_and_lease_and_ack() -> anyhow::Result<()> {
             payload: json!({"hello":"world"}),
             max_attempts: Some(3),
             run_at: None,
+            priority: None,
         })
         .await?;
 
@@ -60,6 +61,7 @@ async fn fail_retries_then_dead() -> anyhow::Result<()> {
             payload: json!({"task":"x"}),
             max_attempts: Some(2),
             run_at: None,
+            priority: None,
         })
         .await?;
 
@@ -95,6 +97,7 @@ async fn lease_expiration_allows_reclaim() -> anyhow::Result<()> {
             payload: json!({"k":"v"}),
             max_attempts: Some(3),
             run_at: None,
+            priority: None,
         })
         .await?;
 

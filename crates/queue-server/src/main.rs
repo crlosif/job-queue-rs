@@ -2,6 +2,7 @@ mod app;
 mod auth;
 mod config;
 mod metrics;
+mod rate_limit;
 mod store;
 
 use std::sync::Arc;
@@ -41,8 +42,13 @@ async fn main() {
     let admin_auth = auth::AdminAuth {
         token: cfg.admin_token.clone(),
     };
+    let api_auth = auth::ApiAuth {
+        token: cfg.api_token.clone(),
+    };
+    let rate_limit_state = rate_limit::RateLimitState::new(cfg.rate_limit_per_minute);
 
-    let app = app::build_app(state, admin_auth).layer(TraceLayer::new_for_http());
+    let app = app::build_app(state, admin_auth, api_auth, rate_limit_state)
+        .layer(TraceLayer::new_for_http());
 
     tracing::info!("listening on {}", cfg.bind);
 

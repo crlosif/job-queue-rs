@@ -1,5 +1,6 @@
-use crate::auth::{self, AdminAuth};
+use crate::auth::{self, AdminAuth, ApiAuth};
 use crate::metrics;
+use crate::rate_limit::{self, RateLimitState};
 use axum::middleware;
 use std::sync::Arc;
 
@@ -7,6 +8,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
 };
 use queue_core::{EnqueueRequest, EnqueueResponse, Job, JobId, QueueError, QueueStore};
@@ -96,15 +98,35 @@ async fn metrics_handler() -> ([(axum::http::header::HeaderName, &'static str); 
     )
 }
 
-pub fn build_app(state: AppState, admin_auth: AdminAuth) -> Router {
-    let public = Router::new()
+/// State for public API routes: store + optional API auth + optional rate limiting.
+type PublicApiState = (AppState, ApiAuth, RateLimitState);
+
+pub fn build_app(
+    state: AppState,
+    admin_auth: AdminAuth,
+    api_auth: ApiAuth,
+    rate_limit_state: RateLimitState,
+) -> Router {
+    let unauthenticated = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/metrics", get(metrics_handler))
+        .route("/metrics", get(metrics_handler));
+
+    let public_api_state: PublicApiState = (state.clone(), api_auth.clone(), rate_limit_state);
+    let public_api = Router::new()
         .route("/v1/jobs", post(enqueue_job))
         .route("/v1/lease", post(lease_jobs))
         .route("/v1/jobs/{id}/ack", post(ack_job))
         .route("/v1/jobs/{id}/fail", post(fail_job))
-        .route("/v1/jobs/{id}/heartbeat", post(heartbeat_job));
+        .route("/v1/jobs/{id}/heartbeat", post(heartbeat_job))
+        .route_layer(middleware::from_fn_with_state(
+            public_api_state.clone(),
+            rate_limit_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            public_api_state.clone(),
+            api_auth_middleware,
+        ))
+        .with_state(public_api_state);
 
     let admin_state = (state.clone(), admin_auth.clone());
     let admin = Router::new()
@@ -119,8 +141,34 @@ pub fn build_app(state: AppState, admin_auth: AdminAuth) -> Router {
 
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .merge(public.with_state(state))
+        .merge(unauthenticated)
+        .merge(public_api)
         .merge(admin)
+}
+
+async fn rate_limit_middleware(
+    State((_state, _auth, rate_limit)): State<PublicApiState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, axum::response::Response> {
+    let key = rate_limit::client_key(req.headers());
+    rate_limit
+        .check(&key)
+        .await
+        .map_err(|code| (code, "rate limit exceeded").into_response())?;
+    Ok(next.run(req).await)
+}
+
+async fn api_auth_middleware(
+    State((_state, auth, _rate_limit)): State<PublicApiState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    if auth::check_api_auth(&auth, &req) {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 async fn admin_auth_middleware(
@@ -146,7 +194,7 @@ async fn admin_auth_middleware(
     )
 )]
 async fn enqueue_job(
-    State(state): State<AppState>,
+    State((state, _auth, _rate_limit)): State<PublicApiState>,
     Json(req): Json<EnqueueRequest>,
 ) -> Result<Json<EnqueueResponse>, (StatusCode, String)> {
     let job_id = state.store.enqueue(req).await.map_err(map_err)?;
@@ -155,18 +203,20 @@ async fn enqueue_job(
     Ok(Json(EnqueueResponse { job_id }))
 }
 
-/// Lease jobs from a queue.
+/// Lease jobs from a queue. Requires API auth if API_TOKEN is set. Rate limited when RATE_LIMIT_PER_MINUTE is set.
 #[utoipa::path(
     post,
     path = "/v1/lease",
     request_body = LeaseRequest,
     responses(
         (status = 200, description = "Leased jobs", body = LeaseResponse),
+        (status = 401, description = "Unauthorized (API_TOKEN required)"),
+        (status = 429, description = "Rate limit exceeded"),
         (status = 500, description = "Internal error")
     )
 )]
 async fn lease_jobs(
-    State(state): State<AppState>,
+    State((state, _auth, _rate_limit)): State<PublicApiState>,
     Json(req): Json<LeaseRequest>,
 ) -> Result<Json<LeaseResponse>, (StatusCode, String)> {
     let jobs = state
@@ -181,20 +231,22 @@ async fn lease_jobs(
     Ok(Json(LeaseResponse { jobs }))
 }
 
-/// Acknowledge (complete) a leased job.
+/// Acknowledge (complete) a leased job. Requires API auth if API_TOKEN is set. Rate limited when RATE_LIMIT_PER_MINUTE is set.
 #[utoipa::path(
     post,
     path = "/v1/jobs/{id}/ack",
     params(("id" = uuid::Uuid, Path, description = "Job ID")),
     responses(
         (status = 204, description = "Job acknowledged"),
+        (status = 401, description = "Unauthorized (API_TOKEN required)"),
         (status = 404, description = "Job not found"),
         (status = 409, description = "Invalid state"),
+        (status = 429, description = "Rate limit exceeded"),
         (status = 500, description = "Internal error")
     )
 )]
 async fn ack_job(
-    State(state): State<AppState>,
+    State((state, _auth, _rate_limit)): State<PublicApiState>,
     Path(id): Path<JobId>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     state.store.ack(id).await.map_err(map_err)?;
@@ -202,7 +254,7 @@ async fn ack_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Mark a leased job as failed (retry or dead).
+/// Mark a leased job as failed (retry or dead). Requires API auth if API_TOKEN is set. Rate limited when RATE_LIMIT_PER_MINUTE is set.
 #[utoipa::path(
     post,
     path = "/v1/jobs/{id}/fail",
@@ -210,13 +262,15 @@ async fn ack_job(
     request_body = FailRequest,
     responses(
         (status = 204, description = "Job failed"),
+        (status = 401, description = "Unauthorized (API_TOKEN required)"),
         (status = 404, description = "Job not found"),
         (status = 409, description = "Invalid state"),
+        (status = 429, description = "Rate limit exceeded"),
         (status = 500, description = "Internal error")
     )
 )]
 async fn fail_job(
-    State(state): State<AppState>,
+    State((state, _auth, _rate_limit)): State<PublicApiState>,
     Path(id): Path<JobId>,
     Json(req): Json<FailRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -230,7 +284,7 @@ async fn fail_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Extend lease for a job.
+/// Extend lease for a job. Requires API auth if API_TOKEN is set. Rate limited when RATE_LIMIT_PER_MINUTE is set.
 #[utoipa::path(
     post,
     path = "/v1/jobs/{id}/heartbeat",
@@ -238,13 +292,15 @@ async fn fail_job(
     request_body = HeartbeatRequest,
     responses(
         (status = 204, description = "Lease extended"),
+        (status = 401, description = "Unauthorized (API_TOKEN required)"),
         (status = 404, description = "Job not found"),
         (status = 409, description = "Invalid state"),
+        (status = 429, description = "Rate limit exceeded"),
         (status = 500, description = "Internal error")
     )
 )]
 async fn heartbeat_job(
-    State(state): State<AppState>,
+    State((state, _auth, _rate_limit)): State<PublicApiState>,
     Path(id): Path<JobId>,
     Json(req): Json<HeartbeatRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
