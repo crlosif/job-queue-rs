@@ -5,51 +5,86 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
 use queue_core::{EnqueueRequest, EnqueueResponse, Job, JobId, QueueError, QueueStore};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn QueueStore>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct LeaseRequest {
     pub queue: String,
     pub limit: i64,
     pub lease_ms: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct LeaseResponse {
     pub jobs: Vec<Job>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct FailRequest {
     pub reason: String,
     pub retry_ms: Option<i64>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct HeartbeatRequest {
     pub extend_ms: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct DepthResponse {
     pub queue: String,
     pub depth: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct DeadJobsResponse {
     pub queue: String,
     pub jobs: Vec<Job>,
 }
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Job Queue API",
+        version = "0.1.0",
+        description = "REST API for enqueueing, leasing, and managing jobs."
+    ),
+    paths(
+        enqueue_job,
+        lease_jobs,
+        ack_job,
+        fail_job,
+        heartbeat_job,
+        admin_depth,
+        admin_dead,
+        admin_requeue
+    ),
+    components(schemas(
+        queue_core::EnqueueRequest,
+        queue_core::EnqueueResponse,
+        queue_core::Job,
+        queue_core::JobState,
+        LeaseRequest,
+        LeaseResponse,
+        FailRequest,
+        HeartbeatRequest,
+        DepthResponse,
+        DeadJobsResponse,
+        DeadQuery
+    ))
+)]
+struct ApiDoc;
 
 async fn metrics_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
     (
@@ -67,22 +102,25 @@ pub fn build_app(state: AppState, admin_auth: AdminAuth) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/v1/jobs", post(enqueue_job))
         .route("/v1/lease", post(lease_jobs))
-        .route("/v1/jobs/:id/ack", post(ack_job))
-        .route("/v1/jobs/:id/fail", post(fail_job))
-        .route("/v1/jobs/:id/heartbeat", post(heartbeat_job));
+        .route("/v1/jobs/{id}/ack", post(ack_job))
+        .route("/v1/jobs/{id}/fail", post(fail_job))
+        .route("/v1/jobs/{id}/heartbeat", post(heartbeat_job));
 
     let admin_state = (state.clone(), admin_auth.clone());
     let admin = Router::new()
-        .route("/v1/admin/queues/:queue/depth", get(admin_depth))
-        .route("/v1/admin/queues/:queue/dead", get(admin_dead))
-        .route("/v1/admin/jobs/:id/requeue", post(admin_requeue))
+        .route("/v1/admin/queues/{queue}/depth", get(admin_depth))
+        .route("/v1/admin/queues/{queue}/dead", get(admin_dead))
+        .route("/v1/admin/jobs/{id}/requeue", post(admin_requeue))
         .with_state(admin_state.clone())
         .route_layer(middleware::from_fn_with_state(
             admin_state,
             admin_auth_middleware,
         ));
 
-    Router::new().merge(public.with_state(state)).merge(admin)
+    Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(public.with_state(state))
+        .merge(admin)
 }
 
 async fn admin_auth_middleware(
@@ -97,6 +135,16 @@ async fn admin_auth_middleware(
     }
 }
 
+/// Enqueue a new job.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs",
+    request_body = EnqueueRequest,
+    responses(
+        (status = 200, description = "Job enqueued", body = EnqueueResponse),
+        (status = 500, description = "Internal error")
+    )
+)]
 async fn enqueue_job(
     State(state): State<AppState>,
     Json(req): Json<EnqueueRequest>,
@@ -107,6 +155,16 @@ async fn enqueue_job(
     Ok(Json(EnqueueResponse { job_id }))
 }
 
+/// Lease jobs from a queue.
+#[utoipa::path(
+    post,
+    path = "/v1/lease",
+    request_body = LeaseRequest,
+    responses(
+        (status = 200, description = "Leased jobs", body = LeaseResponse),
+        (status = 500, description = "Internal error")
+    )
+)]
 async fn lease_jobs(
     State(state): State<AppState>,
     Json(req): Json<LeaseRequest>,
@@ -123,6 +181,18 @@ async fn lease_jobs(
     Ok(Json(LeaseResponse { jobs }))
 }
 
+/// Acknowledge (complete) a leased job.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs/{id}/ack",
+    params(("id" = uuid::Uuid, Path, description = "Job ID")),
+    responses(
+        (status = 204, description = "Job acknowledged"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid state"),
+        (status = 500, description = "Internal error")
+    )
+)]
 async fn ack_job(
     State(state): State<AppState>,
     Path(id): Path<JobId>,
@@ -132,6 +202,19 @@ async fn ack_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Mark a leased job as failed (retry or dead).
+#[utoipa::path(
+    post,
+    path = "/v1/jobs/{id}/fail",
+    params(("id" = uuid::Uuid, Path, description = "Job ID")),
+    request_body = FailRequest,
+    responses(
+        (status = 204, description = "Job failed"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid state"),
+        (status = 500, description = "Internal error")
+    )
+)]
 async fn fail_job(
     State(state): State<AppState>,
     Path(id): Path<JobId>,
@@ -147,6 +230,19 @@ async fn fail_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Extend lease for a job.
+#[utoipa::path(
+    post,
+    path = "/v1/jobs/{id}/heartbeat",
+    params(("id" = uuid::Uuid, Path, description = "Job ID")),
+    request_body = HeartbeatRequest,
+    responses(
+        (status = 204, description = "Lease extended"),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid state"),
+        (status = 500, description = "Internal error")
+    )
+)]
 async fn heartbeat_job(
     State(state): State<AppState>,
     Path(id): Path<JobId>,
@@ -160,13 +256,24 @@ async fn heartbeat_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
-use axum::extract::Query;
-
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 pub struct DeadQuery {
+    /// Max number of dead jobs to return (1–500).
     pub limit: Option<i64>,
 }
 
+/// Get queue depth (admin). Requires Authorization.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/queues/{queue}/depth",
+    params(("queue" = String, Path, description = "Queue name")),
+    responses(
+        (status = 200, description = "Queue depth", body = DepthResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal error")
+    ),
+    security(("admin_token" = []))
+)]
 async fn admin_depth(
     State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(queue): Path<String>,
@@ -175,6 +282,21 @@ async fn admin_depth(
     Ok(Json(DepthResponse { queue, depth }))
 }
 
+/// List dead jobs for a queue (admin). Requires Authorization.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/queues/{queue}/dead",
+    params(
+        ("queue" = String, Path, description = "Queue name"),
+        DeadQuery
+    ),
+    responses(
+        (status = 200, description = "Dead jobs", body = DeadJobsResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal error")
+    ),
+    security(("admin_token" = []))
+)]
 async fn admin_dead(
     State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(queue): Path<String>,
@@ -189,6 +311,19 @@ async fn admin_dead(
     Ok(Json(DeadJobsResponse { queue, jobs }))
 }
 
+/// Requeue a dead job (admin). Requires Authorization.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/jobs/{id}/requeue",
+    params(("id" = uuid::Uuid, Path, description = "Job ID")),
+    responses(
+        (status = 204, description = "Job requeued"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Job not found"),
+        (status = 500, description = "Internal error")
+    ),
+    security(("admin_token" = []))
+)]
 async fn admin_requeue(
     State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(id): Path<JobId>,
