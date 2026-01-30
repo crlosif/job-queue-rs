@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 pub struct Config {
     pub bind: SocketAddr,
     pub database_url: String,
+    pub admin_token: Option<String>,
 }
 
 impl Config {
@@ -14,6 +15,8 @@ impl Config {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set (postgres://...)");
 
-        Self { bind, database_url }
+        let admin_token = std::env::var("ADMIN_TOKEN").ok();
+
+        Self { bind, database_url, admin_token }
     }
 }

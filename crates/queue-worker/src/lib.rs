@@ -76,7 +76,7 @@ pub async fn run_worker(cfg: WorkerConfig) -> anyhow::Result<()> {
 
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
-    let mut shutdown = tokio::signal::ctrl_c();
+    let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
     loop {

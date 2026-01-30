@@ -1,4 +1,6 @@
+use crate::auth::{self, AdminAuth};
 use crate::metrics;
+use axum::middleware;
 use std::sync::Arc;
 
 use axum::{
@@ -49,20 +51,48 @@ pub struct DeadJobsResponse {
     pub jobs: Vec<Job>,
 }
 
-pub fn build_app(state: AppState) -> Router {
-    Router::new()
+async fn metrics_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        metrics::gather(),
+    )
+}
+
+pub fn build_app(state: AppState, admin_auth: AdminAuth) -> Router {
+    let public = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/metrics", get(metrics_handler))
         .route("/v1/jobs", post(enqueue_job))
         .route("/v1/lease", post(lease_jobs))
         .route("/v1/jobs/:id/ack", post(ack_job))
         .route("/v1/jobs/:id/fail", post(fail_job))
-        .route("/metrics", get(|| async { metrics::gather() }))
-        .route("/v1/jobs/:id/heartbeat", post(heartbeat_job))
+        .route("/v1/jobs/:id/heartbeat", post(heartbeat_job));
+
+    let admin_state = (state.clone(), admin_auth.clone());
+    let admin = Router::new()
         .route("/v1/admin/queues/:queue/depth", get(admin_depth))
         .route("/v1/admin/queues/:queue/dead", get(admin_dead))
         .route("/v1/admin/jobs/:id/requeue", post(admin_requeue))
-        .with_state(state)
+        .with_state(admin_state.clone())
+        .route_layer(middleware::from_fn_with_state(admin_state, admin_auth_middleware));
+
+    Router::new()
+        .merge(public.with_state(state))
+        .merge(admin)
 }
+
+async fn admin_auth_middleware(
+    State((_state, auth)): State<(AppState, AdminAuth)>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    if auth::check_admin_auth(&auth, &req) {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
 
 async fn enqueue_job(
     State(state): State<AppState>,
@@ -135,7 +165,7 @@ pub struct DeadQuery {
 }
 
 async fn admin_depth(
-    State(state): State<AppState>,
+    State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(queue): Path<String>,
 ) -> Result<Json<DepthResponse>, (StatusCode, String)> {
     let depth = state.store.queue_depth(&queue).await.map_err(map_err)?;
@@ -143,7 +173,7 @@ async fn admin_depth(
 }
 
 async fn admin_dead(
-    State(state): State<AppState>,
+    State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(queue): Path<String>,
     Query(q): Query<DeadQuery>,
 ) -> Result<Json<DeadJobsResponse>, (StatusCode, String)> {
@@ -157,7 +187,7 @@ async fn admin_dead(
 }
 
 async fn admin_requeue(
-    State(state): State<AppState>,
+    State((state, _auth)): State<(AppState, AdminAuth)>,
     Path(id): Path<JobId>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     state.store.requeue_dead(id).await.map_err(map_err)?;
